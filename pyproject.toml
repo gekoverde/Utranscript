@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "transcript-cli"
+version = "0.1.0"
+description = "Convert any file to (almost) any other format from the terminal: `transcript <file>`."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
+requires-python = ">=3.10"
+authors = [{ name = "gekoverde and Transcript contributors" }]
+keywords = ["converter", "cli", "pandoc", "ffmpeg", "pdf", "transcode", "file-conversion"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+]
+# Every dependency is open source and compatible with an MIT-licensed project.
+# See THIRD_PARTY_LICENSES.md for the details of each one.
+dependencies = [
+    "rich>=13.0",                 # MIT        - terminal output, progress bars
+    "questionary>=2.0.1",         # MIT        - the interactive "to" menu
+    "charset-normalizer>=3.0",    # MIT        - text encoding detection
+    "Pillow>=10.1",               # MIT-CMU    - images
+    "pillow-heif>=0.16",          # BSD-3      - HEIC / HEIF photos
+    "pypdfium2>=4.20",            # Apache-2.0 / BSD-3 - PDF rendering and text
+    "typst>=0.11",                # Apache-2.0 - PDF typesetting without LaTeX
+    "pypandoc_binary>=1.13",      # MIT (ships pandoc, GPL-2.0+, run as a separate program)
+    "imageio-ffmpeg>=0.5",        # BSD-2 (ships ffmpeg, LGPL/GPL, run as a separate program)
+    "openpyxl>=3.1",              # MIT        - Excel workbooks
+    "xlrd>=2.0",                  # BSD-3      - old Excel 97-2003 workbooks (.xls)
+    "PyYAML>=6.0",                # MIT
+    "tomli>=2.0; python_version < '3.11'",  # MIT
+    "tomli-w>=1.0",               # MIT
+    "xmltodict>=0.13",            # MIT
+    "pysubs2>=1.6",               # MIT        - subtitles
+    "fonttools[woff]>=4.40",      # MIT        - fonts (brotli: MIT)
+    "py7zr>=0.20",                # LGPL-2.1+  - 7z archives
+    "Pygments>=2.15",             # BSD-2      - source code highlighting
+]
+
+[project.optional-dependencies]
+speech = ["faster-whisper>=1.0"]  # MIT - speech to text (audio/video -> txt/srt/vtt)
+svg = ["cairosvg>=2.7"]           # LGPL-3.0 - SVG rendering (needs the cairo library)
+raw = ["rawpy>=0.19"]             # MIT      - camera RAW photos
+all = ["transcript-cli[speech,svg,raw]"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+transcript = "transcript.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/gekoverde/Transcript"
+Issues = "https://github.com/gekoverde/Transcript/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["transcript"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"transcript/i18n.py" = ["E501"]
