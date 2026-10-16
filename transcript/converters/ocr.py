@@ -73,7 +73,7 @@ class OcrConverter(Converter):
                 if page.mode not in ("RGB", "L"):
                     page = page.convert("RGB")
                 texts.append(self.read_image(page, ctx))
-                if im.format not in ("TIFF", "MPO"):
+                if im.format != "TIFF":
                     break
         dst.write_text("\n\n\f".join(texts) + "\n", encoding="utf-8")
         return dst

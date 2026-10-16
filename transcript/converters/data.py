@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import configparser
 import csv
 import datetime
@@ -12,6 +13,8 @@ import json
 import plistlib
 import re
 import sys
+import unicodedata
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +30,20 @@ class Tables(dict):
     """Several named tables (the sheets of a workbook)."""
 
 
+class Records(list):
+    """The rows of a table as records, keeping its columns even when there are no rows."""
+
+    def __init__(self, items=(), columns=()):
+        super().__init__(items)
+        self.columns = list(columns)
+
+
 # reading ---------------------------------------------------------------------------------
 
 
-def load(path: Path, fmt: str) -> Any:
+def load(path: Path, fmt: str, typed: bool = True) -> Any:
+    """Read ``path``. ``typed``: numeric CSV columns become numbers (not wanted from CSV to TSV,
+    where every cell must stay exactly as written)."""
     if fmt == "json":
         return json.loads(read_text(path))
     if fmt == "jsonl":
@@ -54,17 +67,14 @@ def load(path: Path, fmt: str) -> Any:
         with open(path, "rb") as fh:
             return plistlib.load(fh)
     if fmt == "ini":
-        parser = configparser.ConfigParser(interpolation=None)
+        # No section is the default one: [DEFAULT] stays a plain section, and keys of other
+        # sections that override it are kept.
+        parser = configparser.ConfigParser(interpolation=None, default_section="\0")
         parser.optionxform = str
         parser.read_string(read_text(path))
-        data: dict[str, Any] = {}
-        if parser.defaults():
-            data["DEFAULT"] = dict(parser.defaults())
-        for section in parser.sections():
-            data[section] = {k: v for k, v in parser.items(section, raw=True) if k not in parser.defaults()}
-        return data
+        return {section: dict(parser.items(section, raw=True)) for section in parser.sections()}
     if fmt in TABULAR:
-        return _read_csv(path, "\t" if fmt == "tsv" else None)
+        return _read_csv(path, "\t" if fmt == "tsv" else None, typed)
     if fmt == "xlsx":
         return _read_xlsx(path)
     if fmt == "xls":
@@ -76,30 +86,34 @@ _INT = re.compile(r"-?(0|[1-9]\d{0,17})")
 _FLOAT = re.compile(r"-?(0|[1-9]\d*)\.\d+")
 
 
-def _typed_columns(header: list[str], rows: list[list[str]]) -> list[dict[str, Any]]:
+def _number(text: str) -> int | float | None:
+    """The number in a cell, only if it is exactly that number: '1.50' is 1.5, but '-0', '007' or
+    '12345678901234567.25' (more digits than a float holds) stay text."""
+    if _INT.fullmatch(text) and str(int(text)) == text:
+        return int(text)
+    if _FLOAT.fullmatch(text) and Decimal(text) == Decimal(repr(float(text))):
+        return float(text)
+    return None
+
+
+def _typed_columns(header: list[str], rows: list[list[str]], typed: bool = True) -> Records:
     """Turn numeric columns into numbers. A column is numeric only if every value is,
     so codes such as '01234' or '+34 600...' keep their exact text."""
-    converters = []
+    numeric = []
     for index in range(len(header)):
         values = [row[index].strip() for row in rows if index < len(row) and row[index].strip()]
-        if values and all(_INT.fullmatch(v) for v in values):
-            converters.append(int)
-        elif values and all(_INT.fullmatch(v) or _FLOAT.fullmatch(v) for v in values):
-            converters.append(float)
-        else:
-            converters.append(None)
-    records = []
+        numeric.append(typed and bool(values) and all(_number(v) is not None for v in values))
+    records = Records(columns=header)
     for row in rows:
         record = {}
         for index, name in enumerate(header):
             value = row[index] if index < len(row) else ""
-            convert = converters[index]
-            record[name] = convert(value) if convert and value.strip() else value
+            record[name] = _number(value.strip()) if numeric[index] and value.strip() else value
         records.append(record)
     return records
 
 
-def _read_csv(path: Path, delimiter: str | None) -> list[dict[str, Any]]:
+def _read_csv(path: Path, delimiter: str | None, typed: bool = True) -> Records:
     text = read_text(path)
     if delimiter is None:
         try:
@@ -108,22 +122,37 @@ def _read_csv(path: Path, delimiter: str | None) -> list[dict[str, Any]]:
             delimiter = ","
     rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
     if not rows:
-        return []
-    header = _unique_header(rows[0])
-    return _typed_columns(header, [row for row in rows[1:] if any(cell.strip() for cell in row)])
+        return Records()
+    data = [row for row in rows[1:] if any(cell.strip() for cell in row)]
+    return _typed_columns(_header(rows[0], data), data, typed)
+
+
+def _header(first: list[Any], rows: list[list[Any]]) -> list[str]:
+    """Column names from the first row, plus columnN for data rows that are longer."""
+    width = max([len(first)] + [_width(row) for row in rows])
+    return _unique_header(list(first) + [None] * (width - len(first)))
+
+
+def _width(row: list[Any]) -> int:
+    """Length of a row without its trailing empty cells."""
+    width = len(row)
+    while width and (row[width - 1] is None or not str(row[width - 1]).strip()):
+        width -= 1
+    return width
 
 
 def _unique_header(cells: list[Any]) -> list[str]:
-    seen: dict[str, int] = {}
-    header = []
-    for index, cell in enumerate(cells, 1):
-        name = str(cell).strip() if cell not in (None, "") else f"column{index}"
-        if name in seen:
-            seen[name] += 1
-            name = f"{name}_{seen[name]}"
-        else:
-            seen[name] = 1
-        header.append(name)
+    names = [str(_plain(cell)).strip() if cell is not None else "" for cell in cells]
+    taken, used, header = set(names), set(), []
+    for index, name in enumerate(names, 1):
+        base = name or f"column{index}"
+        unique, n = base, 1
+        # Repeated and missing names become name_N, never the name of another column.
+        while unique in used or (unique != name and unique in taken):
+            n += 1
+            unique = f"{base}_{n}"
+        used.add(unique)
+        header.append(unique)
     return header
 
 
@@ -132,6 +161,8 @@ def _read_xlsx(path: Path) -> Any:
 
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
+        for sheet in workbook.worksheets:
+            sheet.reset_dimensions()  # read every row even if the stored <dimension> is wrong
         return _tables((sheet.title, sheet.iter_rows(values_only=True)) for sheet in workbook.worksheets)
     finally:
         workbook.close()
@@ -141,20 +172,26 @@ def _read_xls(path: Path) -> Any:
     import xlrd
 
     workbook = xlrd.open_workbook(str(path))
-
-    def value(cell):
-        if cell.ctype == xlrd.XL_CELL_DATE:
-            return xlrd.xldate_as_datetime(cell.value, workbook.datemode)
-        if cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
-            return int(cell.value)
-        if cell.ctype == xlrd.XL_CELL_BOOLEAN:
-            return bool(cell.value)
-        if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
-            return None
-        return cell.value
-
     sheets = workbook.sheets()
-    return _tables((sheet.name, ([value(c) for c in sheet.row(i)] for i in range(sheet.nrows))) for sheet in sheets)
+    return _tables(
+        (sheet.name, ([_xls_value(c, workbook.datemode) for c in sheet.row(i)] for i in range(sheet.nrows))) for sheet in sheets
+    )
+
+
+def _xls_value(cell: Any, datemode: int) -> Any:
+    import xlrd
+
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        return xlrd.xldate_as_datetime(cell.value, datemode)
+    if cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
+        return int(cell.value)
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    if cell.ctype == xlrd.XL_CELL_ERROR:
+        return xlrd.error_text_from_code.get(cell.value, "#ERR")
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return None
+    return cell.value
 
 
 def _tables(sheets) -> Any:
@@ -166,10 +203,10 @@ def _tables(sheets) -> Any:
             rows.pop()
         if not rows:
             continue
-        header = _unique_header(rows[0])
-        tables[title] = [
-            {h: _plain(v) for h, v in zip(header, row, strict=False)} for row in rows[1:] if not all(v is None for v in row)
-        ]
+        data = [row for row in rows[1:] if not all(v is None for v in row)]
+        header = _header(rows[0], data)
+        pad = [None] * len(header)
+        tables[title] = Records(({h: _plain(v) for h, v in zip(header, row + pad, strict=False)} for row in data), header)
     if len(tables) == 1:
         return next(iter(tables.values()))
     return tables
@@ -185,6 +222,7 @@ def _plain(value: Any) -> Any:
 
 
 def dump(data: Any, path: Path, fmt: str) -> Path:
+    data = _normalise(data)
     if fmt == "json":
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=_default) + "\n", encoding="utf-8")
     elif fmt == "jsonl":
@@ -224,11 +262,31 @@ def dump(data: Any, path: Path, fmt: str) -> Path:
     return path
 
 
+def _normalise(data: Any) -> Any:
+    """Text keys and base64 text for bytes, so that every writer accepts the data
+    (YAML keys can be dates or numbers, plist <data> values are bytes)."""
+    if isinstance(data, dict):
+        items = {_key(k): _normalise(v) for k, v in data.items()}
+        return Tables(items) if isinstance(data, Tables) else items
+    if isinstance(data, list):
+        values = [_normalise(v) for v in data]
+        return Records(values, data.columns) if isinstance(data, Records) else values
+    if isinstance(data, (bytes, bytearray)):
+        return base64.b64encode(data).decode("ascii")
+    return data
+
+
+def _key(key: Any) -> str:
+    if isinstance(key, str):
+        return key
+    if key is None or isinstance(key, (bool, int, float)):
+        return json.dumps(key)  # the text JSON itself uses for these keys
+    return str(_plain(_normalise(key)))
+
+
 def _default(value: Any) -> Any:
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
         return value.isoformat()
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
     return str(value)
 
 
@@ -280,6 +338,8 @@ def _xml_root(data: Any) -> dict:
 
 
 def _write_ini(data: Any, path: Path) -> None:
+    if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+        data = {str(n): item for n, item in enumerate(data, 1)}  # records as sections [1], [2]...
     if not isinstance(data, dict):
         raise ConversionError("only key/value data (an object with sections) can be written as INI")
     parser = configparser.ConfigParser(interpolation=None)
@@ -323,21 +383,17 @@ def as_rows(data: Any) -> tuple[list[str], list[list[Any]]]:
     if not isinstance(data, list):
         return ["value"], [[_cell(data)]]
     if all(isinstance(item, dict) for item in data):
-        header: list[str] = []
+        header: list[str] = list(getattr(data, "columns", []))
         for item in data:
             for key in item:
-                if str(key) not in header:
-                    header.append(str(key))
-        return header, [[_cell(item.get(h, item.get(_maybe_int(h)))) for h in header] for item in data]
+                if key not in header:
+                    header.append(key)
+        return header, [[_cell(item.get(h)) for h in header] for item in data]
     if all(isinstance(item, list) for item in data) and data:
         width = max(len(row) for row in data)
         header = [str(v) for v in data[0]] + [f"column{i}" for i in range(len(data[0]) + 1, width + 1)]
         return header, [[_cell(v) for v in row] for row in data[1:]]
     return ["value"], [[_cell(item)] for item in data]
-
-
-def _maybe_int(key: str) -> Any:
-    return int(key) if key.isdigit() else key
 
 
 def _cell(value: Any) -> Any:
@@ -352,12 +408,34 @@ def _write_tables(data: Any, path: Path, delimiter: str) -> Path:
     if isinstance(data, Tables):
         folder = path.with_suffix("")
         folder.mkdir()
+        used: set[str] = set()
         for name, table in data.items():
-            safe = re.sub(r'[<>:"/\\|?*]', "_", name).strip() or "sheet"
-            _write_table(table, folder / (safe + path.suffix), delimiter)
+            _write_table(table, folder / (_file_stem(name, used) + path.suffix), delimiter)
         return folder
     _write_table(data, path, delimiter)
     return path
+
+
+_UNSAFE_FILE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_DEVICE = re.compile(r"(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])", re.IGNORECASE)
+
+
+def _file_stem(name: str, used: set[str]) -> str:
+    """A file name for a sheet that is valid on every system and unique in the folder,
+    even on case-insensitive file systems (Windows, macOS)."""
+    stem = _UNSAFE_FILE_CHARS.sub("_", str(name)).strip().rstrip(". ") or "sheet"
+    if _WINDOWS_DEVICE.fullmatch(stem.split(".")[0].rstrip()):
+        stem = "_" + stem  # CON, AUX, NUL.csv... are devices on Windows
+    unique, n = stem, 1
+    while _fold(unique) in used:
+        n += 1
+        unique = f"{stem} ({n})"
+    used.add(_fold(unique))
+    return unique
+
+
+def _fold(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
 
 
 def _write_table(data: Any, path: Path, delimiter: str) -> None:
@@ -377,15 +455,18 @@ def _write_xlsx(data: Any, path: Path) -> None:
     tables = data.items() if isinstance(data, Tables) else [("Sheet1", data)]
     used: set[str] = set()
     for name, table in tables:
-        title = re.sub(r"[\[\]:*?/\\]", "_", str(name))[:31] or "Sheet"
+        title = re.sub(r"[\[\]:*?/\\]", "_", _xlsx_text(str(name)))[:31] or "Sheet"
         while title in used:
             title = title[:28] + f"_{len(used)}"
         used.add(title)
         sheet = workbook.create_sheet(title)
         header, rows = as_rows(table)
-        sheet.append(header)
-        for row in rows:
-            sheet.append([_xlsx_cell(v) for v in row])
+        for number, row in enumerate([header, *rows], 1):
+            values = [_xlsx_cell(v) for v in row]
+            sheet.append(values)
+            for column, value in enumerate(values, 1):
+                if isinstance(value, str) and value.startswith("="):
+                    sheet.cell(number, column).data_type = "s"  # text that looks like a formula
     workbook.save(path)
 
 
@@ -411,9 +492,17 @@ def _write_html(data: Any, path: Path) -> None:
 
 
 def _xlsx_cell(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, datetime.datetime, datetime.date)):
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        return value.isoformat()  # Excel has no time zones: keep the exact moment as text
+    if value is None or isinstance(value, (int, float, datetime.datetime, datetime.date)):
         return value
-    return str(value)
+    return _xlsx_text(str(value))
+
+
+def _xlsx_text(text: str) -> str:
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    return ILLEGAL_CHARACTERS_RE.sub("", text)  # control characters that XLSX cannot store
 
 
 class DataConverter(Converter):
@@ -436,7 +525,7 @@ class DataConverter(Converter):
 
     def convert(self, src: Path, dst: Path, edge: Edge, ctx) -> Path:
         try:
-            data = load(src, edge.src)
+            data = load(src, edge.src, typed=not (edge.src in TABULAR and edge.dst in TABULAR))
         except ConversionError:
             raise
         except Exception as exc:

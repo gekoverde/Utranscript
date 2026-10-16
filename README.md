@@ -68,6 +68,10 @@ También puedes clonar el repositorio y ejecutar `install.ps1` (Windows) o `./in
 
 Para actualizar: `pipx upgrade transcript-cli`. Para desinstalar: `pipx uninstall transcript-cli`.
 
+> **Windows en ARM** (Surface Pro X, Snapdragon...): pandoc y Typst no publican paquetes para esa
+> arquitectura, así que no se instalan solos. Instala pandoc aparte (`winget install JohnMacFarlane.Pandoc`);
+> los PDF de documentos saldrán entonces a través de LibreOffice.
+
 ### Qué viene incluido y qué es opcional
 
 Con la instalación normal ya funcionan documentos (pandoc va incluido), PDF (Typst y PDFium
@@ -100,7 +104,7 @@ transcript FICHERO [FICHERO ...] [opciones]
 | `-o, --output CARPETA` | Dónde guardar el resultado (por defecto, junto al original) |
 | `-l, --list` | Lista a qué formatos se puede convertir el fichero |
 | `-f, --from FORMATO` | Fuerza el formato de origen (si la extensión no lo dice) |
-| `--overwrite` | Sobrescribe ficheros existentes en vez de crear `nombre (1).ext` |
+| `--overwrite` | Sobrescribe ficheros existentes (y la carpeta `nombre_media` que los acompaña) en vez de crear `nombre (1).ext`. Nunca borra otras carpetas ni el fichero original |
 | `--dpi N` | Resolución al convertir PDF a imágenes (por defecto 150) |
 | `--lang CÓDIGO` | Idioma del contenido para OCR y transcripción de voz (`es`, `en`...) |
 | `--model NOMBRE` | Modelo de voz: `tiny`, `base`, `small` (por defecto), `medium`, `large-v3` |
@@ -162,15 +166,32 @@ dos veces (vídeo → texto → Word sí; vídeo → texto → PDF → PNG no).
 Cuando es posible se convierte sin pérdida: de MKV a MP4 con H.264, por ejemplo, se copian las
 pistas en vez de recomprimir, así que tarda segundos.
 
+### Seguridad
+
+- El resultado se escribe primero con un nombre oculto y solo se renombra al final, así que un
+  fallo (disco lleno, Ctrl+C) nunca deja un fichero a medias ni borra el anterior.
+- Si cancelas o cierras la terminal, se detienen también los programas externos (LibreOffice,
+  FFmpeg...) antes de borrar la carpeta temporal.
+- Un documento descargado no puede colar ficheros privados tuyos en el resultado: se ignoran las
+  imágenes con rutas absolutas o fuera de su carpeta, y se rechazan los `include` que apunten
+  fuera de ella. Los comprimidos con rutas o enlaces que salen de su carpeta también se rechazan.
+
 ## Idioma
 
 Los mensajes salen en español o en inglés según el idioma del sistema. Para forzarlo:
 `TRANSCRIPT_LANG=es` o `TRANSCRIPT_LANG=en`.
 
-Variables de entorno opcionales: `TRANSCRIPT_TMPDIR` (dónde crear la carpeta temporal),
-`TRANSCRIPT_FFMPEG`, `TRANSCRIPT_PANDOC`, `TRANSCRIPT_SOFFICE`, `TRANSCRIPT_TESSERACT`,
-`TRANSCRIPT_EBOOK_CONVERT`, `TRANSCRIPT_7Z` (rutas a los programas) y
-`TRANSCRIPT_WHISPER_MODEL` (modelo de voz por defecto).
+El tamaño de página de los PDF (A4 o Carta) sigue la región del sistema, no el idioma de los mensajes.
+
+Variables de entorno opcionales:
+
+| Variable | Para qué |
+|---|---|
+| `TRANSCRIPT_TMPDIR` | Dónde crear la carpeta temporal |
+| `TRANSCRIPT_ENCODING` | Codificación de los ficheros de texto antiguos si se detecta mal (p. ej. `cp1250`). En Windows se prueba antes la del sistema |
+| `TRANSCRIPT_WHISPER_MODEL` | Modelo de voz por defecto (`small`) |
+| `TRANSCRIPT_WHISPER_DEVICE` | `cuda` para transcribir con una GPU NVIDIA (necesita cuBLAS 12 y cuDNN 9; si falla, se usa la CPU) |
+| `TRANSCRIPT_FFMPEG`, `TRANSCRIPT_PANDOC`, `TRANSCRIPT_SOFFICE`, `TRANSCRIPT_TESSERACT`, `TRANSCRIPT_EBOOK_CONVERT`, `TRANSCRIPT_7Z` | Rutas a los programas, si no están en el `PATH` |
 
 ## Desarrollo
 

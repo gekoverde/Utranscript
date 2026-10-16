@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
 import signal
 import sys
 import traceback
@@ -66,10 +67,12 @@ def _prepare_terminal() -> None:
     def terminate(signum, _frame):
         raise SystemExit(128 + signum)  # unwinds the stack so the temporary folder is removed
 
+    # SIGHUP: the terminal was closed or the SSH connection dropped. SIGBREAK: Ctrl+Break on Windows.
+    names = ("SIGTERM", "SIGHUP", "SIGQUIT", "SIGBREAK")
     try:
-        signal.signal(signal.SIGTERM, terminate)
-        if hasattr(signal, "SIGBREAK"):  # Ctrl+Break on Windows
-            signal.signal(signal.SIGBREAK, terminate)
+        for signum in (getattr(signal, name) for name in names if hasattr(signal, name)):
+            if signal.getsignal(signum) is not signal.SIG_IGN:  # ignored on purpose ('nohup'): leave it so
+                signal.signal(signum, terminate)
     except ValueError:  # not running in the main thread
         pass
 
@@ -78,14 +81,22 @@ def error(message: str) -> None:
     err_console.print(f"[bold red]✘[/bold red] {escape(message)}", highlight=False, soft_wrap=True)
 
 
+def note(message: str) -> None:
+    err_console.print(f"[yellow]![/yellow] {escape(message)}", highlight=False, soft_wrap=True)
+
+
+def clean_path(argument: Path | str) -> Path:
+    """Drop the quotes a Windows shell can leave around a path (``-o "C:\\Out Dir\\"`` arrives as ``C:\\Out Dir"``)."""
+    return Path(str(argument).strip().strip('"').strip("'")).expanduser()
+
+
 def expand(arguments: list[Path]) -> list[Path]:
     """Clean up the paths and expand wildcards (Windows shells do not expand ``*.png``)."""
     paths = []
     for argument in arguments:
-        text = str(argument).strip().strip('"').strip("'")
-        path = Path(text).expanduser()
-        if not path.exists() and any(ch in text for ch in "*?["):
-            matches = sorted(glob.glob(str(path)))
+        path = clean_path(argument)
+        if not path.exists() and any(ch in str(path) for ch in "*?["):
+            matches = sorted(glob.glob(_pattern(path)))
             if matches:
                 paths += [Path(m) for m in matches]
                 continue
@@ -93,11 +104,31 @@ def expand(arguments: list[Path]) -> list[Path]:
     return paths
 
 
+def _pattern(path: Path) -> str:
+    """The glob pattern for ``path``: an existing folder is taken literally, even with '[' in its name."""
+    parent = path.parent
+    if parent != Path(".") and parent.is_dir():
+        return os.path.join(glob.escape(str(parent)), path.name)
+    return str(path)  # wildcards in the folder part too
+
+
+def absolute(path: Path) -> Path:
+    """The absolute path, keeping a symbolic link's own name and folder (the result goes next to it)."""
+    if path.name in ("", ".."):  # '.', '..', a drive: only resolving gives the folder a name
+        return path.resolve()
+    return path.parent.resolve() / path.name
+
+
 def run(args: argparse.Namespace) -> int:
+    target = formats.lookup(args.to) if args.to else None
+    if args.to and target is None:
+        error(t("target.unknown", name=args.to))
+        return 2
+    output = clean_path(args.output) if args.output else None
     jobs: list[tuple[Path, str]] = []
     for path in expand(args.files):
         if path.exists():
-            path = path.resolve()
+            path = absolute(path)
         else:
             error(t("file.not_found", path=path))
             return 2
@@ -111,21 +142,29 @@ def run(args: argparse.Namespace) -> int:
             if fmt is None:
                 error(t("file.unknown_format", path=path))
                 return 2
+        if fmt == target and not args.list:
+            note(t("file.already", name=path.name, fmt=format_label(fmt)))
+            continue
         jobs.append((path, fmt))
+    if not jobs:  # every file is already in the target format
+        return 0
 
     options = Options(dpi=args.dpi, lang=args.lang, model=args.model, verbose=args.verbose)
     reporter = RichReporter(args.verbose)
     edges = all_edges()
 
-    with Workspace() as workspace:
+    space = Workspace()
+    with space as workspace:
         if args.verbose:
             reporter.log(t("workspace.created", path=workspace))
         probe_ctx = Context(workspace, options, reporter)
         all_routes: list[dict[str, Route]] = []
         for path, fmt in jobs:
-            routes = plan(fmt, edges, first_step_ok(path, probe_ctx))
+            routes = plan(fmt, edges, first_step_ok(path, probe_ctx), check_same_category=True)
             if not routes:
-                error(t("file.no_routes", fmt=format_label(fmt)))
+                # Converters exist, but none accepts this file: it is not what its name says.
+                damaged = bool(plan(fmt, edges))
+                error(t("file.damaged" if damaged else "file.no_routes", name=path.name, fmt=format_label(fmt)))
                 return 1
             all_routes.append(routes)
             console.print(
@@ -144,27 +183,22 @@ def run(args: argparse.Namespace) -> int:
             print_targets(menu_routes)
             return 0
 
-        if args.to:
-            target = formats.lookup(args.to)
-            if target is None:
-                error(t("target.unknown", name=args.to))
+        if target is None:
+            if not is_interactive():
+                error(t("target.noninteractive", targets=targets_line(menu_routes)))
                 return 2
-            if target not in common:
-                src = ", ".join(sorted({format_label(f) for _, f in jobs}))
-                error(t("target.unavailable", src=src, dst=format_label(target), targets=targets_line(menu_routes)))
-                return 2
-        elif is_interactive():
             target = choose_target(menu_routes)
-            if target is None:
+            if target not in menu_routes:  # cancelled
                 err_console.print(t("cancelled"))
                 return 130
-        else:
-            error(t("target.noninteractive", targets=targets_line(menu_routes)))
+        elif target not in common:
+            src = ", ".join(sorted({format_label(f) for _, f in jobs}))
+            error(t("target.unavailable", src=src, dst=format_label(target), targets=targets_line(menu_routes)))
             return 2
 
         failures = 0
         for index, ((path, _), routes) in enumerate(zip(jobs, all_routes, strict=True), 1):
-            out_dir = (args.output or path.parent).expanduser()
+            out_dir = output or path.parent
             job_dir = workspace / f"job{index}"
             job_dir.mkdir()
             ctx = Context(job_dir, options, reporter)
@@ -186,7 +220,7 @@ def run(args: argparse.Namespace) -> int:
             finally:
                 remove_tree(job_dir)
 
-    if args.verbose:
+    if args.verbose and space.removed:
         reporter.log(t("workspace.removed", path=workspace))
     if failures and len(jobs) > 1:
         error(t("convert.summary_fail", count=failures))

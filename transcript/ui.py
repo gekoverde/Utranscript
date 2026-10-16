@@ -15,8 +15,9 @@ from .engine import Reporter
 from .i18n import t
 from .planner import Route
 
-console = Console(highlight=False)
-err_console = Console(stderr=True, highlight=False)
+# No emoji codes: ':a:' in an FFmpeg message or ':smile:' in a file name must be printed as is.
+console = Console(highlight=False, emoji=False)
+err_console = Console(stderr=True, highlight=False, emoji=False)
 
 
 def format_label(fmt_id: str) -> str:
@@ -60,6 +61,24 @@ def menu_rows(routes: dict[str, Route]) -> list[tuple[str, list[tuple[str, str, 
     return groups
 
 
+class MenuTitle(str):
+    """A menu row as shown, whose type-to-filter search only sees part of it.
+
+    questionary filters on ``title.lower()``: the route ("via TXT") and the category headings are
+    left out of it, so typing "txt" picks Plain text and not "PDF  via TXT".
+    """
+
+    searchable: str
+
+    def __new__(cls, text: str, searchable: str):
+        title = super().__new__(cls, text)
+        title.searchable = searchable
+        return title
+
+    def lower(self) -> str:
+        return self.searchable.lower()
+
+
 def choose_target(routes: dict[str, Route]) -> str | None:
     """Show the interactive "to" menu and return the chosen format id (None if cancelled)."""
     import questionary
@@ -69,11 +88,13 @@ def choose_target(routes: dict[str, Route]) -> str | None:
     width = max(len(label) for _, rows in groups for _, label, _ in rows)
     choices: list = []
     for category, rows in groups:
-        choices.append(Separator(f"── {t('cat.' + category)} ──"))
+        heading = Separator(f"── {t('cat.' + category)} ──")
+        heading.title = MenuTitle(heading.title, "")  # headings never match what is typed
+        choices.append(heading)
         for fmt_id, label, via in rows:
             ext = formats.get(fmt_id).ext or "/"
-            title = f"{label:<{width}}  {ext:<9}{via}"
-            choices.append(Choice(title=title, value=fmt_id))
+            searchable = f"{label:<{width}}  {ext}"
+            choices.append(Choice(title=MenuTitle(f"{searchable:<{width + 11}}{via}", searchable), value=fmt_id))
     style = Style(
         [
             ("qmark", "fg:#61afef bold"),
@@ -84,17 +105,21 @@ def choose_target(routes: dict[str, Route]) -> str | None:
             ("instruction", "fg:#7f848e"),
         ]
     )
-    return questionary.select(
-        t("menu.title"),
-        choices=choices,
-        qmark="",
-        pointer="❯",
-        instruction=t("menu.instruction"),
-        use_search_filter=True,
-        use_jk_keys=False,
-        use_shortcuts=False,
-        style=style,
-    ).ask(kbi_msg="")
+    while True:
+        answer = questionary.select(
+            t("menu.title"),
+            choices=choices,
+            qmark="",
+            pointer="❯",
+            instruction=t("menu.instruction"),
+            use_search_filter=True,
+            use_jk_keys=False,
+            use_shortcuts=False,
+            style=style,
+        ).ask(kbi_msg="")
+        # After typing, the cursor can rest on a category heading, and Enter returns its title.
+        if answer is None or answer in routes:
+            return answer
 
 
 class RichReporter(Reporter):

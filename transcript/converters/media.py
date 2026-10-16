@@ -21,6 +21,7 @@ class Target:
     copy_video: frozenset[str] | None = frozenset()  # codecs that can be copied as is; None = any
     copy_audio: frozenset[str] | None = frozenset()
     extra: tuple[str, ...] = ()
+    pcm: str = ""  # "le" or "be": uncompressed PCM with the bit depth of the source instead of ``audio``
 
 
 H264: Encoders = (
@@ -40,16 +41,23 @@ def _set(*names: str) -> frozenset[str]:
     return frozenset(names)
 
 
+PCM_WAV = _set("pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "pcm_f64le")
+PCM_AIFF = _set("pcm_s8", "pcm_s16be", "pcm_s24be", "pcm_s32be", "pcm_f32be", "pcm_f64be")
+LOSSLESS = _set("flac", "alac", "wavpack", "ape", "tta", "truehd", "mlp", "tak", "shorten")
+WMA = (("wmav2", ("-b:a", "192k", "-ac", "2")),)  # wmav2 cannot encode more than two channels
+MP4_FAMILY = ("mp4", "m4v", "mov")
+
+
 AUDIO_TARGETS: dict[str, Target] = {
     "mp3": Target(audio=(("libmp3lame", ("-q:a", "2")),), copy_audio=_set("mp3")),
-    "wav": Target(audio=(("pcm_s16le", ()),), copy_audio=_set("pcm_s16le")),
+    "wav": Target(audio=(("pcm_s16le", ()),), copy_audio=PCM_WAV, pcm="le"),
     "flac": Target(audio=(("flac", ()),), copy_audio=_set("flac")),
     "m4a": Target(audio=AAC_HQ, copy_audio=_set("aac", "alac"), extra=("-movflags", "+faststart")),
     "aac": Target(audio=AAC_HQ, copy_audio=_set("aac")),
     "ogg": Target(audio=VORBIS, copy_audio=_set("vorbis")),
     "opus": Target(audio=OPUS, copy_audio=_set("opus")),
-    "wma": Target(audio=(("wmav2", ("-b:a", "192k")),), copy_audio=_set("wmav1", "wmav2")),
-    "aiff": Target(audio=(("pcm_s16be", ()),), copy_audio=_set("pcm_s16be")),
+    "wma": Target(audio=WMA, copy_audio=_set("wmav1", "wmav2")),
+    "aiff": Target(audio=(("pcm_s16be", ()),), copy_audio=PCM_AIFF, pcm="be"),
     "ac3": Target(audio=(("ac3", ("-b:a", "384k")),), copy_audio=_set("ac3")),
     "mka": Target(audio=(("flac", ()),), copy_audio=None),
 }
@@ -83,7 +91,7 @@ VIDEO_TARGETS: dict[str, Target] = {
     ),
     "wmv": Target(
         (("wmv2", ("-b:v", "4M")),),
-        (("wmav2", ("-b:a", "192k")),),
+        WMA,
         _set("wmv1", "wmv2", "wmv3", "vc1"),
         _set("wmav1", "wmav2", "wmapro"),
     ),
@@ -118,6 +126,7 @@ class Probe:
     video: tuple[str, ...]
     audio: tuple[str, ...]
     subtitles: tuple[str, ...]
+    sample: str = "s16"  # PCM sample type that keeps the first audio stream intact: s16, s24, s32 or f32
 
 
 @cache
@@ -129,6 +138,20 @@ def encoders() -> frozenset[str]:
         if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in "VAS" and parts[1] != "=":
             names.add(parts[1])
     return frozenset(names)
+
+
+def _sample(codec: str, details: str) -> str:
+    """The banner gives the decoded sample format, plus the real depth when it is smaller: "s32 (24 bit)"."""
+    match = re.search(r", (u8|s16|s32|s64|flt|dbl)p?(?: \((\d+) bit\))?(?:,|$)", details)
+    if not match:
+        return "s16"
+    fmt, bits = match.groups()
+    if not (bits or codec.startswith("pcm_") or codec in LOSSLESS):
+        return "s16"  # lossy decoders output float samples, but more than 16 bits would only make the file bigger
+    if fmt in ("flt", "dbl"):
+        return "f32"
+    depth = int(bits or fmt[1:])
+    return "s16" if depth <= 16 else "s24" if depth <= 24 else "s32"
 
 
 @cache
@@ -149,12 +172,15 @@ def probe(path: str) -> Probe:
         h, m, s = match.groups()
         duration = int(h) * 3600 + int(m) * 60 + float(s)
     streams: dict[str, list[str]] = {"Video": [], "Audio": [], "Subtitle": []}
+    sample = "s16"
     for match in re.finditer(r"Stream #\d+:\d+.*?: (Video|Audio|Subtitle): ([\w-]+)(.*)", text):
         kind, codec, rest = match.groups()
         if kind == "Video" and "attached pic" in rest:
             continue  # cover art, not a real video
+        if kind == "Audio" and not streams["Audio"]:
+            sample = _sample(codec, rest)
         streams[kind].append(codec)
-    return Probe(duration, tuple(streams["Video"]), tuple(streams["Audio"]), tuple(streams["Subtitle"]))
+    return Probe(duration, tuple(streams["Video"]), tuple(streams["Audio"]), tuple(streams["Subtitle"]), sample)
 
 
 def _pick(choices: Encoders) -> tuple[str, tuple[str, ...]] | None:
@@ -226,7 +252,7 @@ class FFmpegConverter(Converter):
         attempts = []
         if info.audio and (spec.copy_audio is None or info.audio[0] in spec.copy_audio):
             attempts.append(base + ["-c:a", "copy", *spec.extra])
-        encoder = _pick(spec.audio)
+        encoder = (f"pcm_{info.sample}{spec.pcm}", ()) if spec.pcm else _pick(spec.audio)
         if encoder is None:
             raise ConversionError("no suitable audio encoder in this FFmpeg build")
         attempts.append(base + ["-c:a", encoder[0], *encoder[1], *spec.extra])
@@ -239,6 +265,8 @@ class FFmpegConverter(Converter):
         audio_ok = spec.copy_audio is None or all(a in spec.copy_audio for a in info.audio)
         if video_ok and audio_ok:
             copy = ["-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-map_metadata", "0", *spec.extra]
+            if target in MP4_FAMILY and info.video[0] == "hevc":
+                copy += ["-tag:v", "hvc1"]  # Apple players refuse the hev1 tag kept from MKV and other sources
             if target == "mkv" and info.subtitles:
                 attempts.append(copy[:4] + ["-map", "0:s?"] + copy[4:])
             attempts.append(copy[:4] + ["-sn"] + copy[4:])
@@ -263,7 +291,15 @@ class FFmpegConverter(Converter):
         errors = ctx.scratch("ffmpeg") / "stderr.txt"
         with open(errors, "w+", encoding="utf-8", errors="replace") as err:
             proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", errors="replace"
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=err,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=ctx.env(),
+                **tools.spawn_options(),
             )
             try:
                 assert proc.stdout is not None
@@ -272,10 +308,9 @@ class FFmpegConverter(Converter):
                     if key in ("out_time_us", "out_time_ms") and value.isdigit():
                         ctx.progress(int(value) / 1_000_000, duration)
                 code = proc.wait()
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
+            except BaseException:
+                tools.kill_tree(proc)  # Ctrl+C or an error: nothing may keep writing into the workspace
+                raise
             if code != 0:
                 err.seek(0)
                 raise ConversionError(f"FFmpeg: {tools.tail(err.read(), 5)}")

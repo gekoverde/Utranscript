@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .. import tools
 from .base import ConversionError, Converter, Edge, move_into
-from .text import read_text
+from .text import read_text, utf8_copy
 
 WRITER_IN = ("doc", "docx", "odt", "rtf", "txt", "html", "wpd", "wps", "pages")
 CALC_IN = ("xls", "xlsx", "ods", "csv", "tsv", "numbers")
@@ -20,16 +20,17 @@ WRITER_OUT = {
     "doc": "doc:MS Word 97",
     "odt": "odt:writer8",
     "rtf": "rtf:Rich Text Format",
-    "txt": "txt:Text (encoded):UTF8",
+    "txt": "txt:Text (encoded):UTF8,LF",
     "html": "html:XHTML Writer File:UTF8",
     "epub": "epub:EPUB",
 }
+# No CSV: LibreOffice only exports the first sheet. Workbooks reach CSV through XLSX and the
+# data converter, which writes every sheet.
 CALC_OUT = {
     "pdf": "pdf:calc_pdf_Export",
     "xlsx": "xlsx:Calc MS Excel 2007 XML",
     "xls": "xls:MS Excel 97",
     "ods": "ods:calc8",
-    "csv": "csv:Text - txt - csv (StarCalc):44,34,76,1",
     "html": "html:HTML (StarCalc)",
 }
 IMPRESS_OUT = {
@@ -38,9 +39,9 @@ IMPRESS_OUT = {
     "ppt": "ppt:MS PowerPoint 97",
     "odp": "odp:impress8",
 }
+# No PNG: LibreOffice only exports the first page. Drawings reach PNG through PDF, one image per page.
 DRAW_OUT = {
     "pdf": "pdf:draw_pdf_Export",
-    "png": "png:draw_png_Export",
     "svg": "svg:draw_svg_Export",
     "odg": "odg:draw8",
 }
@@ -94,7 +95,7 @@ class LibreOfficeConverter(Converter):
                 return 2.0
             if src == "txt":
                 return 1.2
-            if dst in ("txt", "html", "csv"):
+            if dst in ("txt", "html"):
                 return 1.5
             if dst == "epub":
                 return 2.0
@@ -111,6 +112,8 @@ class LibreOfficeConverter(Converter):
         export = _export_filter(edge.src, edge.dst)
         work = ctx.scratch("libreoffice")
         infilter = None
+        if edge.src in ("csv", "tsv", "txt"):
+            src = utf8_copy(src, ctx.scratch("text"))  # the import filters below say UTF-8
         if edge.src == "pdf":
             infilter = "writer_pdf_import"
         elif edge.src in ("csv", "tsv"):
@@ -118,10 +121,7 @@ class LibreOfficeConverter(Converter):
         elif edge.src == "html":
             infilter = "HTML (StarWriter)"  # open in Writer, not Writer/Web, so every export works
         elif edge.src == "txt":
-            utf8 = work / src.name
-            utf8.write_text(read_text(src), encoding="utf-8")
-            src = utf8
-            infilter = "Text (encoded):UTF8"
+            infilter = "Text (encoded):UTF8,LF"
 
         profile = ctx.workspace / "_libreoffice_profile"
         outdir = work / "out"

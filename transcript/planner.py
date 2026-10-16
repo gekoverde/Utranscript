@@ -52,8 +52,15 @@ def plan(
     edges: Iterable[Edge],
     first_step_ok: Callable[[Edge], bool] | None = None,
     max_steps: int = MAX_STEPS,
+    check_same_category: bool = False,
 ) -> dict[str, Route]:
-    """Return the cheapest route from ``source`` to every reachable format."""
+    """Return the cheapest route from ``source`` to every reachable format.
+
+    ``first_step_ok`` checks the first step against the actual input file. With ``check_same_category``
+    it also checks the later steps while the route is still in the category of the source: what it
+    looks at (the audio and video streams, the font outlines) survives those steps, so
+    ``mp4 -> m4v -> mp3`` is no way around a video without sound.
+    """
     by_src: dict[str, list[Edge]] = defaultdict(list)
     for edge in edges:
         by_src[edge.src].append(edge)
@@ -78,7 +85,8 @@ def plan(
             new_changes = changes + (_category(edge.src) != _category(edge.dst))
             if new_changes > MAX_CATEGORY_CHANGES:
                 continue
-            if not path and first_step_ok is not None and not first_step_ok(edge):
+            checked = not path or (check_same_category and changes == 0)
+            if checked and first_step_ok is not None and not first_step_ok(edge):
                 continue
             new_cost = cost + edge.cost + HOP_PENALTY
             new_path = path + (edge,)

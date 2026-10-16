@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,8 +47,8 @@ CODE_EXTENSIONS = (
     ".cmd", ".sql", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".hs", ".erl",
     ".ex", ".exs", ".clj", ".lisp", ".el", ".ml", ".nim", ".zig", ".vhd", ".vhdl", ".asm",
     ".s", ".pas", ".f90", ".cmake", ".mk", ".tf", ".hcl", ".proto", ".graphql", ".gql",
-    ".diff", ".patch", ".ino", ".sol", ".coffee", ".elm", ".purs", ".v", ".sv",
-)  # ".ts" is handled specially: it is either TypeScript or an MPEG transport stream.
+    ".diff", ".patch", ".ino", ".sol", ".coffee", ".elm", ".purs", ".v", ".sv", ".cts",
+)  # ".ts" and ".mts" are handled specially: they are either TypeScript or an MPEG transport stream.
 
 CODE_FILENAMES = {"dockerfile", "makefile", "gnumakefile", "rakefile", "gemfile", "jenkinsfile", "vagrantfile"}
 # fmt: on
@@ -246,14 +249,17 @@ def detect(path: Path) -> str | None:
         return "code"
     _, ext = split_name(path)
     ext = ext.lower()
-    if ext == ".ts":
+    if ext in (".ts", ".mts"):
         return "ts" if _is_mpeg_ts(path) else "code"
     if ext in _BY_EXT:
         return _BY_EXT[ext]
     return sniff(path)
 
 
-def _read_head(path: Path, size: int = 4096) -> bytes:
+HEAD_SIZE = 4096
+
+
+def _read_head(path: Path, size: int = HEAD_SIZE) -> bytes:
     try:
         with open(path, "rb") as fh:
             return fh.read(size)
@@ -262,8 +268,12 @@ def _read_head(path: Path, size: int = 4096) -> bytes:
 
 
 def _is_mpeg_ts(path: Path) -> bool:
-    head = _read_head(path, 189)
-    return len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47
+    """Three packets starting with 0x47: 188 bytes long, or 192 with a 4-byte timestamp first (Blu-ray, AVCHD)."""
+    head = _read_head(path, 3 * 192)
+    for size, offset in ((188, 0), (192, 4)):
+        if len(head) > offset + 2 * size and all(head[offset + n * size] == 0x47 for n in range(3)):
+            return True
+    return False
 
 
 _MAGIC: tuple[tuple[int, bytes, str], ...] = (
@@ -342,8 +352,29 @@ def sniff(path: Path) -> str | None:
         return "mp3"
     for offset, magic, fmt in _MAGIC:
         if head[offset : offset + len(magic)] == magic:
+            if fmt in _COMPRESSORS and not _holds_tar(path, fmt):
+                return None  # a single compressed file (table.csv.gz), not an archive
             return fmt
-    return _sniff_text(head)
+    return _sniff_text(head, complete=len(head) < HEAD_SIZE)
+
+
+_COMPRESSORS = {"tgz": "gzip", "tbz2": "bz2", "txz": "lzma"}
+
+
+def _holds_tar(path: Path, fmt: str) -> bool:
+    """Whether the gzip/bzip2/xz file ``path`` decompresses to a tar archive."""
+    import importlib
+
+    try:  # the module is imported here because Python can be built without bz2 or lzma
+        with importlib.import_module(_COMPRESSORS[fmt]).open(path, "rb") as fh:
+            block = fh.read(tarfile.BLOCKSIZE)
+    except Exception:
+        return True  # damaged: the archive converter will say so
+    try:
+        tarfile.TarInfo.frombuf(block, "utf-8", "surrogateescape")  # checks the header checksum
+    except tarfile.HeaderError:
+        return False
+    return True
 
 
 def _sniff_zip(path: Path) -> str:
@@ -366,7 +397,8 @@ def _sniff_zip(path: Path) -> str:
     return "zip"
 
 
-def _sniff_text(head: bytes) -> str | None:
+def _sniff_text(head: bytes, complete: bool = True) -> str | None:
+    """``complete``: ``head`` is the whole file, not just its first bytes."""
     if b"\x00" in head:
         return None
     try:
@@ -376,15 +408,47 @@ def _sniff_text(head: bytes) -> str | None:
         text = head.decode("latin-1")
         if sum(ch < 32 and ch not in (9, 10, 13) for ch in head) > len(head) // 100:
             return None
-    stripped = text.lstrip("﻿ \t\r\n").lower()
+    body = text.lstrip("\ufeff \t\r\n")
+    stripped = body.lower()
     if stripped.startswith("<?xml") or stripped.startswith("<svg"):
         return "svg" if "<svg" in stripped[:2048] else "xml"
     if stripped.startswith("<!doctype html") or stripped.startswith("<html"):
         return "html"
     if stripped.startswith("{\\rtf"):
         return "rtf"
+    if stripped[:1] in ("[", ";") and _is_ini(body):
+        return "ini"
     if stripped[:1] in ("{", "["):
-        return "json"
+        found = _sniff_json(body, complete)
+        if found:
+            return found
     if stripped.startswith("webvtt"):
         return "vtt"
     return "txt"
+
+
+_INI_SECTION = re.compile(r"\[[^\[\]]+\]")
+_INI_KEY = re.compile(r"[^=:\s\[][^=:]*[=:]")
+
+
+def _is_ini(text: str) -> bool:
+    """A ``[section]`` line and then ``key = value`` (setup.cfg, .gitconfig, .desktop files...)."""
+    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line and line[0] not in "#;"]
+    return len(lines) > 1 and bool(_INI_SECTION.fullmatch(lines[0]) and _INI_KEY.match(lines[1]))
+
+
+def _sniff_json(text: str, complete: bool) -> str | None:
+    """'json' or 'jsonl' only when ``text`` parses, or fails just where the head of a big file was cut off."""
+    try:
+        json.loads(text)
+        return "json"
+    except json.JSONDecodeError as exc:
+        if not complete and (exc.pos >= len(text.rstrip()) - 5 or exc.msg.startswith("Unterminated string")):
+            return "json"
+    except RecursionError:
+        return None
+    rows = [line for line in text.splitlines() if line.strip()][: None if complete else -1]
+    try:
+        return "jsonl" if len(rows) > 1 and all(isinstance(json.loads(row), (dict, list)) for row in rows) else None
+    except (ValueError, RecursionError):
+        return None

@@ -51,7 +51,7 @@ class Converter:
         return ()
 
     def accepts(self, src: Path, edge: Edge, ctx: Context) -> bool:
-        """Last-minute check on the actual input file, only for the first step of a route."""
+        """Check against the actual input file, for the steps of a route still in its category."""
         return True
 
     def convert(self, src: Path, dst: Path, edge: Edge, ctx: Context) -> Path:

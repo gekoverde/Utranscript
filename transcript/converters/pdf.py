@@ -84,9 +84,12 @@ class PdfConverter(Converter):
             from .ocr import OcrConverter
 
             ocr = OcrConverter()
-            if ocr.available():
-                ctx.log("no text layer found, running OCR")
-                text = "\n\n\f".join(ocr.read_image(img, ctx) for img in render_pages(src, 300))
+            if not ocr.available():
+                raise ConversionError(f"the PDF has no text layer (it looks scanned); reading it needs Tesseract OCR: {ocr.hint}")
+            ctx.log("no text layer found, running OCR")
+            text = "\n\n\f".join(ocr.read_image(img, ctx) for img in render_pages(src, 300)).strip()
+            if not text:
+                raise ConversionError("the PDF has no text layer and OCR did not find any text in it")
         dst.write_text(text + "\n", encoding="utf-8")
         return dst
 

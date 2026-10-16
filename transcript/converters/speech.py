@@ -16,6 +16,11 @@ def default_model() -> str:
     return os.environ.get("TRANSCRIPT_WHISPER_MODEL") or "small"
 
 
+def device() -> str:
+    """The CPU unless the GPU is asked for: CUDA also needs cuBLAS and cuDNN, which are often missing."""
+    return "cuda" if os.environ.get("TRANSCRIPT_WHISPER_DEVICE", "").strip().lower() == "cuda" else "cpu"
+
+
 class SpeechConverter(Converter):
     name = "faster-whisper"
     hint = "pipx inject transcript-cli faster-whisper  ·  or: pip install transcript-cli[speech]"
@@ -40,24 +45,16 @@ class SpeechConverter(Converter):
             return True
 
     def convert(self, src: Path, dst: Path, edge: Edge, ctx) -> Path:
-        from faster_whisper import WhisperModel
-
         model_name = ctx.options.model or default_model()
         ctx.reporter.log(i18n.t("speech.loading", model=model_name))
+        wanted = device()
         try:
-            model = WhisperModel(model_name, device="auto", compute_type="int8")
-        except Exception as exc:
-            raise ConversionError(
-                f"cannot load the speech model '{model_name}' (it is downloaded from huggingface.co the first time): {exc}"
-            ) from exc
-        try:
-            segments, info = model.transcribe(str(src), language=ctx.options.lang, vad_filter=True, beam_size=5)
-            collected = []
-            for segment in segments:
-                collected.append(segment)
-                ctx.progress(segment.end, info.duration)
-        except Exception as exc:
-            raise ConversionError(f"speech recognition failed: {exc}") from exc
+            collected = self._transcribe(src, model_name, wanted, ctx)
+        except ConversionError as exc:
+            if wanted == "cpu":
+                raise
+            ctx.reporter.log(i18n.t("speech.cpu_fallback", "CUDA failed, using the CPU instead ({error})", error=exc))
+            collected = self._transcribe(src, model_name, "cpu", ctx)
 
         if edge.dst == "txt":
             text = "\n".join(s.text.strip() for s in collected if s.text.strip())
@@ -73,3 +70,24 @@ class SpeechConverter(Converter):
                 subs.append(pysubs2.SSAEvent(start=start, end=end, text=segment.text.strip()))
         subs.save(str(dst), format_=edge.dst, encoding="utf-8")
         return dst
+
+    @staticmethod
+    def _transcribe(src: Path, model_name: str, device: str, ctx) -> list:
+        from faster_whisper import WhisperModel
+
+        try:
+            # "auto" lets CTranslate2 pick a compute type the GPU supports instead of failing.
+            model = WhisperModel(model_name, device=device, compute_type="int8" if device == "cpu" else "auto")
+        except Exception as exc:
+            raise ConversionError(
+                f"cannot load the speech model '{model_name}' (it is downloaded from huggingface.co the first time): {exc}"
+            ) from exc
+        try:  # segments are produced lazily: CUDA errors can also show up while iterating
+            segments, info = model.transcribe(str(src), language=ctx.options.lang, vad_filter=True, beam_size=5)
+            collected = []
+            for segment in segments:
+                collected.append(segment)
+                ctx.progress(segment.end, info.duration)
+            return collected
+        except Exception as exc:
+            raise ConversionError(f"speech recognition failed: {exc}") from exc

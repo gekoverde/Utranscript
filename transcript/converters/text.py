@@ -4,31 +4,102 @@ from __future__ import annotations
 
 import html
 import importlib.util
+import os
+import re
 from pathlib import Path
 
-from .. import i18n
+from .. import i18n, tools
 from .base import ConversionError, Converter, Edge
+
+_BOMS = (
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+    (b"\xff\xfe\x00\x00", "utf-32"),
+    (b"\x00\x00\xfe\xff", "utf-32"),
+    (b"\xff\xfe", "utf-16"),
+    (b"\xfe\xff", "utf-16"),
+)
+# A Latin-1 symbol inside a word ("Za¿ó³æ") means the bytes are in another code page (Polish...).
+_SYMBOL_IN_WORD = re.compile(r"[^\W\d_][\u00a1-\u00b6\u00b8-\u00bf][^\W\d_]")
 
 
 def read_text(path: Path) -> str:
-    """Read a text file whatever its encoding (UTF-8, UTF-16, Windows-1252...)."""
-    data = path.read_bytes()
-    for bom, encoding in ((b"\xef\xbb\xbf", "utf-8-sig"), (b"\xff\xfe", "utf-16"), (b"\xfe\xff", "utf-16")):
+    """Read a text file whatever its encoding (UTF-8, UTF-16, Windows-1252...), with "\\n" line ends."""
+    text = _decode(path.read_bytes())
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode(data: bytes) -> str:
+    for bom, encoding in _BOMS:
         if data.startswith(bom):
-            return data.decode(encoding)
+            return data.decode(encoding, errors="replace")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         pass
+    for encoding in _legacy_encodings():
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    western = _western(data)
+    if western is not None:
+        return western
     try:
         from charset_normalizer import from_bytes
 
-        best = from_bytes(data).best()
-        if best is not None:
-            return str(best)
+        for match in from_bytes(data):
+            # Without NUL bytes the data cannot be UTF-16/32: those guesses turn text into CJK.
+            if b"\x00" in data or not match.encoding.startswith(("utf_16", "utf_32")):
+                return str(match)
     except Exception:
         pass
     return data.decode("cp1252", errors="replace")
+
+
+def _legacy_encodings() -> list[str]:
+    """Encodings to trust before guessing: the one the user asked for (TRANSCRIPT_ENCODING), and on
+    Windows the system's own code page when it is not Windows-1252 (cp1250 on a Czech PC, cp1251 on a
+    Russian one...): old files on a computer are usually in its code page."""
+    encodings = [os.environ["TRANSCRIPT_ENCODING"]] if os.environ.get("TRANSCRIPT_ENCODING") else []
+    if tools.WINDOWS:
+        try:
+            import ctypes
+
+            code_page = ctypes.windll.kernel32.GetACP()
+            if code_page not in (1252, 65001):  # Windows-1252 is checked below, 65001 is UTF-8
+                encodings.append(f"cp{code_page}")
+        except Exception:
+            pass
+    return encodings
+
+
+def _western(data: bytes) -> str | None:
+    """Windows-1252, the usual 8-bit encoding of Western text, when the result looks like it.
+
+    Detectors often pick another code page for short Western text (ñ read as ń). Text in other
+    alphabets also decodes as Windows-1252, but then most of its letters are not ASCII.
+    """
+    if b"\x00" in data:
+        return None
+    try:
+        text = data.decode("cp1252")
+    except UnicodeDecodeError:
+        return None
+    letters = [c for c in text if c.isalpha()]
+    if sum(not c.isascii() for c in letters) >= 0.35 * len(letters) > 0 or _SYMBOL_IN_WORD.search(text):
+        return None
+    return text
+
+
+def write_text(path: Path, text: str) -> Path:
+    """Write UTF-8 text with "\\n" line ends on every system (Windows would write "\\r\\n")."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
+def utf8_copy(src: Path, folder: Path) -> Path:
+    """A UTF-8 copy of a text file, for programs that guess other encodings wrong."""
+    return write_text(folder / src.name, read_text(src))
 
 
 def typst_compile(main: Path, dst: Path, root: Path) -> Path:
@@ -76,12 +147,12 @@ class TextConverter(Converter):
     def convert(self, src: Path, dst: Path, edge: Edge, ctx) -> Path:
         text = read_text(src)
         if edge.dst == "html":
-            dst.write_text(text_to_html(text, src.stem), encoding="utf-8")
+            write_text(dst, text_to_html(text, src.stem))
         elif edge.dst == "txt":
-            dst.write_text(text, encoding="utf-8")
+            write_text(dst, text)
         else:
             fence = "````" if "```" in text else "```"
-            dst.write_text(f"{fence}{code_language(src)}\n{text.rstrip()}\n{fence}\n", encoding="utf-8")
+            write_text(dst, f"{fence}{code_language(src)}\n{text.rstrip()}\n{fence}\n")
         return dst
 
 
@@ -140,7 +211,7 @@ class TypstConverter(Converter):
         if edge.src == "typ":
             return typst_compile(src, dst, src.parent)
         work = ctx.scratch("typst")
-        (work / "content.txt").write_text(read_text(src), encoding="utf-8")
+        write_text(work / "content.txt", read_text(src))
         if edge.src == "code":
             body = f'#set text(size: 8.5pt)\n#raw(read("content.txt"), lang: {typst_string(code_language(src))}, block: true)\n'
         else:
@@ -150,5 +221,5 @@ class TypstConverter(Converter):
                 '#raw(read("content.txt"), block: true)\n'
             )
         main = work / "main.typ"
-        main.write_text(f'#set page(paper: "{i18n.paper_size()}", margin: 2cm)\n' + body, encoding="utf-8")
+        write_text(main, f'#set page(paper: "{i18n.paper_size()}", margin: 2cm)\n' + body)
         return typst_compile(main, dst, work)

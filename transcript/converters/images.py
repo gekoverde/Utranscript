@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from functools import cache
 from pathlib import Path
 
@@ -31,6 +32,8 @@ PILLOW_NAMES = {
 }
 
 ANIMATED = {"gif", "webp", "png", "avif"}
+# Pillow also reports layered PSDs and stereo MPOs as "animated": only these really are.
+ANIMATED_SOURCES = {"GIF", "PNG", "WEBP", "AVIF"}
 NO_ALPHA = {"jpg", "bmp", "pcx", "ppm"}
 SAVE_PARAMS = {
     "jpg": {"quality": 92, "optimize": True},
@@ -66,6 +69,30 @@ def pillow_formats() -> tuple[frozenset[str], frozenset[str]]:
     return readable, writable
 
 
+def cmyk_to_rgb(img):
+    """CMYK to sRGB through the embedded ICC profile when there is one (plain inversion otherwise)."""
+    icc = img.info.get("icc_profile")
+    if icc:
+        try:
+            from PIL import ImageCms
+
+            src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            rgb = ImageCms.profileToProfile(img, src, ImageCms.createProfile("sRGB"), outputMode="RGB")
+            rgb.info.pop("icc_profile", None)  # untagged means sRGB; lcms' own profile is v4, which old viewers mishandle
+            return rgb
+        except Exception:
+            pass
+    rgb = img.convert("RGB")
+    rgb.info.pop("icc_profile", None)
+    return rgb
+
+
+def icc_fits(icc: bytes, mode: str) -> bool:
+    """Whether an ICC profile is for this pixel mode's colour space (a CMYK profile on RGB pixels is invalid)."""
+    expected = {"CMYK": b"CMYK", "L": b"GRAY", "LA": b"GRAY", "1": b"GRAY"}.get(mode, b"RGB ")
+    return icc[16:20] == expected
+
+
 def flatten(img, background=(255, 255, 255)):
     """Return an RGB/L copy of ``img`` with transparency composed over a white background."""
     from PIL import Image
@@ -77,7 +104,7 @@ def flatten(img, background=(255, 255, 255)):
         return out
     if img.mode in ("RGB", "L"):
         return img
-    return img.convert("RGB")
+    return cmyk_to_rgb(img) if img.mode == "CMYK" else img.convert("RGB")
 
 
 def to_8bit(img):
@@ -102,6 +129,26 @@ def square(img):
 
 def has_alpha(img) -> bool:
     return img.mode in ("RGBA", "LA", "PA", "RGBa", "La") or (img.mode == "P" and "transparency" in img.info)
+
+
+def keeps_frames(im, target: str) -> bool:
+    """Whether every frame is written: animations stay animations, multi-page TIFFs stay multi-page TIFFs."""
+    if not getattr(im, "is_animated", False):
+        return False
+    if im.format in ANIMATED_SOURCES:
+        return target in ANIMATED or target == "tiff"
+    return im.format == "TIFF" and target == "tiff"
+
+
+def plays(im) -> int:
+    """How many times an animation plays, 0 meaning forever."""
+    if im.format == "AVIF":  # Pillow does not read the AVIF repetition count; they usually loop
+        return 0
+    loop = im.info.get("loop")
+    if loop is None:  # a GIF without a NETSCAPE loop block plays once
+        return 1
+    # A GIF loop count is the number of repeats after the first play (as in browsers and gif2webp).
+    return loop + 1 if im.format == "GIF" and loop else loop
 
 
 class PillowConverter(Converter):
@@ -129,9 +176,8 @@ class PillowConverter(Converter):
         except (UnidentifiedImageError, OSError) as exc:
             raise ConversionError(f"cannot read the image: {exc}") from exc
         with im:
-            frames = getattr(im, "n_frames", 1)
             if edge.dst == "pdf":
-                pages = ImageSequence.Iterator(im) if im.format in ("TIFF", "MPO") else [im]
+                pages = ImageSequence.Iterator(im) if im.format == "TIFF" else [im]
                 images = [flatten(to_8bit(ImageOps.exif_transpose(p.copy()) or p)) for p in pages]
                 dpi = (im.info.get("dpi") or (96, 96))[0] or 96
                 images[0].save(dst, "PDF", save_all=True, append_images=images[1:], resolution=float(dpi))
@@ -139,22 +185,30 @@ class PillowConverter(Converter):
 
             target = edge.dst
             fmt = PILLOW_NAMES[target]
-            if frames > 1 and (target in ANIMATED or target == "tiff"):
-                images = [self._prepare(f.copy(), target) for f in ImageSequence.Iterator(im)]
+            if keeps_frames(im, target):
+                images, durations = [], []
+                for frame in ImageSequence.Iterator(im):
+                    copy = frame.copy()  # loading the frame is what reads its own duration (WebP)
+                    durations.append(copy.info.get("duration") or 100)
+                    images.append(self._prepare(copy, target))
                 params = {"save_all": True, "append_images": images[1:]}
                 if target in ANIMATED:
-                    durations = []
-                    for frame in ImageSequence.Iterator(im):
-                        durations.append(frame.info.get("duration", im.info.get("duration", 100)) or 100)
-                    params.update(duration=durations, loop=im.info.get("loop", 0))
+                    params["duration"] = durations
+                    loops = plays(im)
+                    if target != "gif":
+                        params["loop"] = loops
+                    else:  # None (no loop block) plays once; it must be explicit or Pillow copies the source's
+                        params["loop"] = None if loops == 1 else max(loops - 1, 0)
                 self._save(images[0], dst, target, fmt, params)
                 return dst
 
+            # PSD: the flattened composite. MPO: the primary picture. Multi-page TIFF: the first page.
             img = ImageOps.exif_transpose(im) or im
             img = self._prepare(img, target)
             params = dict(SAVE_PARAMS.get(target, {}))
             icc = im.info.get("icc_profile")
-            if icc and target in KEEPS_ICC:
+            img.info.pop("icc_profile", None)  # PNG and TIFF would write it on their own
+            if icc and target in KEEPS_ICC and icc_fits(icc, img.mode):
                 params["icc_profile"] = icc
             exif = img.getexif()
             if exif and target in KEEPS_EXIF:
@@ -169,15 +223,16 @@ class PillowConverter(Converter):
     @staticmethod
     def _prepare(img, target: str):
         img = to_8bit(img)
+        if img.mode == "CMYK" and target != "tiff":
+            img = cmyk_to_rgb(img)
         if target in NO_ALPHA:
             img = flatten(img)
-            if target != "jpg" and img.mode == "CMYK":
-                img = img.convert("RGB")
-        elif img.mode == "CMYK" and target != "tiff":
-            img = img.convert("RGB")
         elif target == "ico" and img.mode != "RGBA":
             img = img.convert("RGBA")
-        elif target in ("png", "webp", "avif", "heic") and img.mode == "P":
+        elif target == "qoi" and img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA" if has_alpha(img) else "RGB")
+        elif img.mode == "P" and target != "gif" and (has_alpha(img) or target in ("png", "webp", "avif", "heic")):
+            # Outside GIF, palette transparency only survives as a real alpha channel (TIFF, TGA...).
             img = img.convert("RGBA" if has_alpha(img) else "RGB")
         return img
 

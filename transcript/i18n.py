@@ -19,6 +19,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "file.unknown_format": "Could not detect the format of '{path}'. Use --from to specify it.",
         "file.unknown_from": "Unknown format: '{name}'. Run 'transcript --formats' to see the supported formats.",
         "file.no_routes": "No conversions available for {fmt} with the tools installed. Run 'transcript --doctor' to see what is missing.",
+        "file.damaged": "'{name}' looks damaged, or is not really in {fmt} format. If you know its real format, give it with --from.",
+        "file.already": "'{name}' is already {fmt}: skipped.",
         "batch.no_common": "These files have no target format in common.",
         "target.unknown": "Unknown target format: '{name}'.",
         "target.unavailable": "Cannot convert {src} to {dst}. Possible targets: {targets}",
@@ -71,6 +73,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "help.model": "speech recognition model: tiny, base, small, medium, large-v3 (default: small)",
         "help.verbose": "show the commands being run and the temporary folder",
         "speech.loading": "Loading speech model '{model}' (the first time it is downloaded)…",
+        "speech.cpu_fallback": "CUDA failed, using the CPU instead ({error})",
     },
     "es": {
         "menu.title": "to",
@@ -81,6 +84,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         "file.unknown_format": "No se pudo detectar el formato de '{path}'. Usa --from para indicarlo.",
         "file.unknown_from": "Formato desconocido: '{name}'. Ejecuta 'transcript --formats' para ver los formatos soportados.",
         "file.no_routes": "No hay conversiones disponibles para {fmt} con las herramientas instaladas. Ejecuta 'transcript --doctor' para ver qué falta.",
+        "file.damaged": "'{name}' parece dañado, o no está realmente en formato {fmt}. Si sabes su formato real, indícalo con --from.",
+        "file.already": "'{name}' ya es {fmt}: se omite.",
         "batch.no_common": "Estos ficheros no tienen ningún formato de destino en común.",
         "target.unknown": "Formato de destino desconocido: '{name}'.",
         "target.unavailable": "No se puede convertir {src} a {dst}. Destinos posibles: {targets}",
@@ -133,6 +138,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "help.model": "modelo de reconocimiento de voz: tiny, base, small, medium, large-v3 (por defecto: small)",
         "help.verbose": "muestra los comandos ejecutados y la carpeta temporal",
         "speech.loading": "Cargando el modelo de voz '{model}' (la primera vez se descarga)…",
+        "speech.cpu_fallback": "CUDA ha fallado, se usa la CPU ({error})",
     },
 }
 
@@ -168,9 +174,40 @@ LETTER_REGIONS = {"US", "CA", "MX", "PH", "CL", "CO", "VE", "PR", "CR", "GT", "P
 
 
 def paper_size() -> str:
-    """'us-letter' in the Americas regions that use it, 'a4' everywhere else."""
-    region = _system_language().split(".")[0].replace("-", "_").split("_")[1:2]
+    """'us-letter' in the regions that use it, 'a4' everywhere else.
+
+    It follows the region settings, never the language of the messages: TRANSCRIPT_LANG=en or an
+    English Windows must not give a European user Letter pages.
+    """
+    if sys.platform == "win32":
+        return _windows_paper_size()
+    for var in ("LC_ALL", "LC_PAPER", "LANG"):  # in the order POSIX gives them precedence
+        value = os.environ.get(var)
+        if value:
+            return _paper_for(value)
+    return "a4"
+
+
+def _paper_for(locale_name: str) -> str:
+    """Paper of the region in a locale name: 'es_MX.UTF-8', 'en-US'..."""
+    region = locale_name.split(".")[0].split("@")[0].replace("-", "_").split("_")[1:2]
     return "us-letter" if region and region[0].upper() in LETTER_REGIONS else "a4"
+
+
+def _windows_paper_size() -> str:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        buffer = ctypes.create_unicode_buffer(85)
+        # LOCALE_IPAPERSIZE of the user's regional format: 1 Letter, 5 Legal, 8 A3, 9 A4.
+        if kernel32.GetLocaleInfoEx(None, 0x100A, buffer, len(buffer)):
+            return "us-letter" if buffer.value.strip() in ("1", "5") else "a4"
+        if kernel32.GetUserDefaultLocaleName(buffer, len(buffer)):
+            return _paper_for(buffer.value)
+    except Exception:
+        pass
+    return "a4"
 
 
 def t(key: str, default: str | None = None, **kwargs: object) -> str:

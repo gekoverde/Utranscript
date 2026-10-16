@@ -61,7 +61,7 @@ def make_gif(path: Path) -> Path:
 
 
 def make_pdf(path: Path, pages: int = 2) -> Path:
-    import typst
+    typst = pytest.importorskip("typst")
 
     source = path.with_suffix(".typ")
     body = "\n#pagebreak()\n".join(f"= Página {n}\nTexto de prueba número {n}." for n in range(1, pages + 1))

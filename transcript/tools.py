@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -31,15 +32,40 @@ def find_program(names: Sequence[str], env_var: str | None = None, extra: Sequen
     """Find an executable: environment variable override, then PATH, then well-known locations."""
     if env_var and os.environ.get(env_var):
         candidate = os.environ[env_var]
-        if Path(candidate).is_file() or shutil.which(candidate):
-            return candidate
+        found = candidate if Path(candidate).is_file() else which(candidate)
+        if found:
+            return found
     for name in names:
-        found = shutil.which(name)
+        found = which(name)
         if found:
             return found
     for path in extra:
         if path.is_file():
             return str(path)
+    return None
+
+
+def which(name: str) -> str | None:
+    """``shutil.which``, except that on Windows a program in the current directory is never used.
+
+    Windows looks in the current directory before PATH, so an ``ffmpeg.exe`` planted next to the
+    user's files would run instead of the real one.
+    """
+    if not WINDOWS or os.path.dirname(name):
+        return shutil.which(name)
+    os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")  # the same rule for Python 3.12+ and children
+    exts = [e for e in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if e]
+    files = [name] if any(name.lower().endswith(e.lower()) for e in exts) else [name + e for e in exts]
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        folder = folder.strip().strip('"')
+        # '', '.' and other relative entries also point into the current directory.
+        if not os.path.isabs(folder) or os.path.normcase(os.path.abspath(folder)) == cwd:
+            continue
+        for file in files:
+            path = os.path.join(folder, file)
+            if os.path.isfile(path):
+                return path
     return None
 
 
@@ -118,35 +144,76 @@ def inkscape() -> str | None:
     return find_program(["inkscape"], None, extra)
 
 
+def spawn_options() -> dict:
+    """Extra ``Popen`` arguments so that a child and everything it starts can be killed together.
+
+    On POSIX the child gets its own session (LibreOffice, for instance, runs ``soffice.bin``
+    as a grandchild). On Windows the child stays in the console group so that Ctrl+C still
+    reaches it and ``wait()`` returns promptly.
+    """
+    return {} if WINDOWS else {"start_new_session": True}
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a child started with ``spawn_options()`` and all of its descendants."""
+    try:
+        if WINDOWS:
+            if proc.poll() is None:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def run(
     cmd: Sequence[str],
     *,
     cwd: Path | None = None,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
     verbose: bool = False,
     log=None,
 ) -> subprocess.CompletedProcess:
-    """Run a command, raising ConversionError with the tail of its output when it fails."""
+    """Run a command, raising ConversionError with the tail of its output when it fails.
+
+    If the command times out or Transcript is interrupted, the whole process tree is killed
+    so that nothing keeps writing into the temporary workspace after it is removed.
+    """
     if verbose and log:
         log(" ".join(_quote(c) for c in cmd))
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             list(cmd),
             cwd=str(cwd) if cwd else None,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
+            env=env,
+            **spawn_options(),
         )
     except FileNotFoundError as exc:
         raise ConversionError(f"program not found: {cmd[0]}") from exc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        kill_tree(proc)
         raise ConversionError(f"{Path(cmd[0]).name} timed out") from exc
+    except BaseException:
+        kill_tree(proc)
+        raise
     if proc.returncode != 0:
-        raise ConversionError(f"{Path(cmd[0]).name} failed: {tail(proc.stderr or proc.stdout)}")
-    return proc
+        raise ConversionError(f"{Path(cmd[0]).name} failed: {tail(stderr or stdout)}")
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
 def tail(text: str, lines: int = 8) -> str:

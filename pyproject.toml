@@ -26,13 +26,15 @@ classifiers = [
 # See THIRD_PARTY_LICENSES.md for the details of each one.
 dependencies = [
     "rich>=13.0",                 # MIT        - terminal output, progress bars
-    "questionary>=2.0.1",         # MIT        - the interactive "to" menu
+    "questionary>=2.1.0",         # MIT        - the interactive "to" menu
     "charset-normalizer>=3.0",    # MIT        - text encoding detection
     "Pillow>=10.1",               # MIT-CMU    - images
     "pillow-heif>=0.16",          # BSD-3      - HEIC / HEIF photos
     "pypdfium2>=4.20",            # Apache-2.0 / BSD-3 - PDF rendering and text
-    "typst>=0.11",                # Apache-2.0 - PDF typesetting without LaTeX
-    "pypandoc_binary>=1.13",      # MIT (ships pandoc, GPL-2.0+, run as a separate program)
+    # typst and pypandoc_binary only have x64 wheels for Windows. On Windows on ARM, Typst is disabled
+    # and pandoc is taken from PATH. (Windows x64 is 'AMD64', or 'x86_64' for some resolvers.)
+    "typst>=0.11; sys_platform != 'win32' or platform_machine == 'AMD64' or platform_machine == 'x86_64'",  # Apache-2.0 - PDF typesetting without LaTeX
+    "pypandoc_binary>=1.13; sys_platform != 'win32' or platform_machine == 'AMD64' or platform_machine == 'x86_64'",  # MIT (ships pandoc, GPL-2.0+, run as a separate program)
     "imageio-ffmpeg>=0.5",        # BSD-2 (ships ffmpeg, LGPL/GPL, run as a separate program)
     "openpyxl>=3.1",              # MIT        - Excel workbooks
     "xlrd>=2.0",                  # BSD-3      - old Excel 97-2003 workbooks (.xls)
@@ -42,7 +44,7 @@ dependencies = [
     "xmltodict>=0.13",            # MIT
     "pysubs2>=1.6",               # MIT        - subtitles
     "fonttools[woff]>=4.40",      # MIT        - fonts (brotli: MIT)
-    "py7zr>=0.20",                # LGPL-2.1+  - 7z archives
+    "py7zr>=1.1.2",               # LGPL-2.1+  - 7z archives (1.1.2 refuses symlinks pointing out of the folder)
     "Pygments>=2.15",             # BSD-2      - source code highlighting
 ]
 
