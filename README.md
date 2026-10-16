@@ -33,7 +33,7 @@ cancelas con Ctrl+C.
 
 ```
   DOCX → PDF con LibreOffice ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:02
-✔ Guardado: C:\Users\ana\Documentos\informe.pdf
+✔ Guardado: C:\Users\user\Documentos\informe.pdf
 ```
 
 Si ya existe un fichero con ese nombre no se sobrescribe: se guarda como `informe (1).pdf`.
