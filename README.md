@@ -1,4 +1,4 @@
-# Transcript
+# Utranscript
 
 Herramienta de terminal para pasar **cualquier fichero de un formato a otro**, en Windows,
 Linux y macOS. Igual que escribes `claude` y se abre Claude Code, aquí escribes:
@@ -51,7 +51,7 @@ forma global y aislada:
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath          # cierra y vuelve a abrir la terminal después
-pipx install git+https://github.com/gekoverde/Transcript.git
+pipx install git+https://github.com/gekoverde/Utranscript.git
 ```
 
 **Linux / macOS**
@@ -59,12 +59,12 @@ pipx install git+https://github.com/gekoverde/Transcript.git
 ```bash
 python3 -m pip install --user pipx    # o: sudo apt install pipx
 python3 -m pipx ensurepath
-pipx install git+https://github.com/gekoverde/Transcript.git
+pipx install git+https://github.com/gekoverde/Utranscript.git
 ```
 
 También puedes clonar el repositorio y ejecutar `install.ps1` (Windows) o `./install.sh`
 (Linux/macOS), que hacen lo mismo. Con [uv](https://docs.astral.sh/uv/) basta
-`uv tool install git+https://github.com/gekoverde/Transcript.git`.
+`uv tool install git+https://github.com/gekoverde/Utranscript.git`.
 
 Para actualizar: `pipx upgrade transcript-cli`. Para desinstalar: `pipx uninstall transcript-cli`.
 
@@ -196,7 +196,7 @@ Variables de entorno opcionales:
 ## Desarrollo
 
 ```bash
-git clone https://github.com/gekoverde/Transcript.git
+git clone https://github.com/gekoverde/Utranscript.git
 cd Transcript
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"

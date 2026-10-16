@@ -8,7 +8,7 @@ if (Test-Path (Join-Path $PSScriptRoot "pyproject.toml")) {
     $Source = $PSScriptRoot
     $Spec = if ($Speech) { "$Source[speech]" } else { $Source }
 } else {
-    $Source = "git+https://github.com/gekoverde/Transcript.git"
+    $Source = "git+https://github.com/gekoverde/Utranscript.git"
     $Spec = if ($Speech) { "transcript-cli[speech] @ $Source" } else { $Source }
 }
 

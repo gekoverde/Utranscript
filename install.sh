@@ -8,7 +8,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$HERE/pyproject.toml" ]; then
     SOURCE="$HERE"
 else
-    SOURCE="git+https://github.com/gekoverde/Transcript.git"
+    SOURCE="git+https://github.com/gekoverde/Utranscript.git"
 fi
 if [ "$1" = "--speech" ]; then
     SPEC="transcript-cli[speech] @ $SOURCE"
