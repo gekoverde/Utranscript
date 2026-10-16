@@ -156,9 +156,9 @@ def extract(src: Path, fmt: str, dest: Path, ctx) -> None:
         if fmt in ("zip", "cbz"):
             with zipfile.ZipFile(src) as zf:
                 names = zf.namelist()
+                _check_names(dest, names)
                 for name in names:
                     _check_member(dest, name)
-                _check_names(dest, names)
                 zf.extractall(dest)
         elif fmt in TAR_MODES:
             with tarfile.open(src) as tf:
@@ -173,9 +173,9 @@ def extract(src: Path, fmt: str, dest: Path, ctx) -> None:
 
             with py7zr.SevenZipFile(src, "r") as archive:
                 files = list(archive.files)
+                _check_names(dest, [f.filename for f in files])
                 for f in files:
                     _check_member(dest, f.filename)
-                _check_names(dest, [f.filename for f in files])
                 _check_7z_links(files)
                 archive.extractall(path=dest)
         else:

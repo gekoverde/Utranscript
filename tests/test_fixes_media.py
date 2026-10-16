@@ -210,7 +210,8 @@ def test_interrupted_ffmpeg_is_killed_and_uses_the_workspace_tmp(samples, monkey
         with pytest.raises(KeyboardInterrupt):  # arealtime makes FFmpeg take 30 s unless it is stopped
             media.FFmpegConverter._run(src, workspace / "out.wav", ["-af", "arealtime", "-c:a", "pcm_s16le"], 30.0, ctx)
         assert time.monotonic() - begin < 20
-        proc, kwargs = started[-1]
+        # The FFmpeg process (on Windows kill_tree also starts taskkill, after it).
+        proc, kwargs = next((p, k) for p, k in started if "taskkill" not in str(p.args))
         assert killed == [proc] and proc.poll() is not None
         assert Path(kwargs["env"]["TMPDIR"]).is_relative_to(workspace)
         assert all(kwargs.get(key) == value for key, value in tools.spawn_options().items())
