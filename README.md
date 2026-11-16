@@ -1,7 +1,9 @@
 # Utranscript
 
 Herramienta de terminal para pasar **cualquier fichero de un formato a otro**, en Windows,
-Linux y macOS. Igual que escribes `claude` y se abre Claude Code, aquí escribes:
+Linux y macOS.
+
+Escribe por ejemplo:
 
 ```
 transcript informe.docx
