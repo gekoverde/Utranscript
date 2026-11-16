@@ -79,10 +79,45 @@ class MenuTitle(str):
         return self.searchable.lower()
 
 
+def menu_style():
+    from questionary import Style
+
+    return Style(
+        [
+            ("qmark", "fg:#61afef bold"),
+            ("question", "bold"),
+            ("pointer", "fg:#61afef bold"),
+            ("highlighted", "fg:#61afef bold"),
+            ("separator", "fg:#7f848e"),
+            ("instruction", "fg:#7f848e"),
+        ]
+    )
+
+
+MAIN_ACTIONS = ("update", "formats", "doctor", "help")
+
+
+def choose_action() -> str | None:
+    """The menu of ``transcript`` without a file: one of MAIN_ACTIONS, or None if cancelled."""
+    import questionary
+    from questionary import Choice
+
+    return questionary.select(
+        t("main.title"),
+        choices=[Choice(title=t(f"main.{action}"), value=action) for action in MAIN_ACTIONS],
+        qmark="",
+        pointer="❯",
+        instruction=t("main.instruction"),
+        use_jk_keys=False,
+        use_shortcuts=False,
+        style=menu_style(),
+    ).ask(kbi_msg="")
+
+
 def choose_target(routes: dict[str, Route]) -> str | None:
     """Show the interactive "to" menu and return the chosen format id (None if cancelled)."""
     import questionary
-    from questionary import Choice, Separator, Style
+    from questionary import Choice, Separator
 
     groups = menu_rows(routes)
     width = max(len(label) for _, rows in groups for _, label, _ in rows)
@@ -95,16 +130,7 @@ def choose_target(routes: dict[str, Route]) -> str | None:
             ext = formats.get(fmt_id).ext or "/"
             searchable = f"{label:<{width}}  {ext}"
             choices.append(Choice(title=MenuTitle(f"{searchable:<{width + 11}}{via}", searchable), value=fmt_id))
-    style = Style(
-        [
-            ("qmark", "fg:#61afef bold"),
-            ("question", "bold"),
-            ("pointer", "fg:#61afef bold"),
-            ("highlighted", "fg:#61afef bold"),
-            ("separator", "fg:#7f848e"),
-            ("instruction", "fg:#7f848e"),
-        ]
-    )
+    style = menu_style()
     while True:
         answer = questionary.select(
             t("menu.title"),

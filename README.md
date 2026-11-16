@@ -74,7 +74,7 @@ También puedes clonar el repositorio y ejecutar `install.ps1` (Windows) o `./in
 `uv tool install --python 3.13 git+https://github.com/gekoverde/Utranscript.git` (uv también
 descarga Python 3.13 si hace falta).
 
-Para actualizar: `pipx upgrade transcript-cli`. Para desinstalar: `pipx uninstall transcript-cli`.
+Para desinstalar: `pipx uninstall transcript-cli` (o `uv tool uninstall transcript-cli`).
 
 > **Si falla con «Microsoft Visual C++ 14.0 or greater is required»**: estás instalando con una
 > versión de Python demasiado nueva (normalmente la 3.15). Alguna dependencia todavía no tiene
@@ -84,6 +84,25 @@ Para actualizar: `pipx upgrade transcript-cli`. Para desinstalar: `pipx uninstal
 > **Windows en ARM** (Surface Pro X, Snapdragon...): pandoc y Typst no publican paquetes para esa
 > arquitectura, así que no se instalan solos. Instala pandoc aparte (`winget install JohnMacFarlane.Pandoc`);
 > los PDF de documentos saldrán entonces a través de LibreOffice.
+
+### Actualizar
+
+Ejecuta `transcript` sin ningún fichero y elige **Actualizar Transcript desde GitHub** en el
+menú, o escribe directamente:
+
+```
+transcript --update
+```
+
+Comprueba el último commit de este repositorio y, si es más nuevo que el tuyo, lo instala con
+el mismo Python con el que instalaste Transcript, tanto si usaste pipx como uv o pip. Se
+conservan los extras que tengas instalados, como la transcripción de voz. Hace falta Git e Internet; si
+ya tienes la última versión, no se descarga nada. `transcript --version` muestra el commit que
+tienes instalado.
+
+`pipx upgrade` no sirve para esto: el número de versión no cambia con cada commit, y pip solo
+reinstala desde git cuando cambia la versión. Una copia de desarrollo (`pip install -e`) no se
+toca: actualízala con `git pull`.
 
 ### Qué viene incluido y qué es opcional
 
@@ -113,6 +132,7 @@ transcript FICHERO [FICHERO ...] [opciones]
 | Opción | Descripción |
 |---|---|
 | *(sin opciones)* | Abre el menú `to` para elegir el formato de destino |
+| *(sin fichero)* | `transcript` solo abre un menú: actualizar, ver formatos, ver motores o ayuda |
 | `-t, --to FORMATO` | Convierte directamente sin menú: `--to pdf`, `--to mp3`, `--to .jpg` |
 | `-o, --output CARPETA` | Dónde guardar el resultado (por defecto, junto al original) |
 | `-l, --list` | Lista a qué formatos se puede convertir el fichero |
@@ -123,6 +143,7 @@ transcript FICHERO [FICHERO ...] [opciones]
 | `--model NOMBRE` | Modelo de voz: `tiny`, `base`, `small` (por defecto), `medium`, `large-v3` |
 | `--formats` | Lista todos los formatos soportados |
 | `--doctor` | Muestra los motores de conversión instalados |
+| `--update` | Actualiza Transcript a la última versión de GitHub |
 | `-v, --verbose` | Muestra los comandos ejecutados y la carpeta temporal |
 
 Ejemplos:
@@ -219,7 +240,8 @@ pytest
 Estructura:
 
 - `transcript/cli.py` — comando `transcript` y opciones.
-- `transcript/ui.py` — el menú `to` y las barras de progreso.
+- `transcript/ui.py` — los menús (`to` y el de `transcript` sin fichero) y las barras de progreso.
+- `transcript/update.py` — `transcript --update`: actualización desde GitHub.
 - `transcript/formats.py` — catálogo de formatos y detección (por extensión y por contenido).
 - `transcript/planner.py` — búsqueda de la mejor ruta de conversión.
 - `transcript/engine.py` — carpeta temporal y ejecución de los pasos.

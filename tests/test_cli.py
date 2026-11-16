@@ -3,7 +3,8 @@ import json
 from transcript.cli import main
 
 
-def test_help_without_arguments(capsys):
+def test_help_without_arguments(capsys, monkeypatch):
+    monkeypatch.setattr("transcript.cli.is_interactive", lambda: False)  # in a terminal it opens the menu
     assert main([]) == 0
     assert "transcript" in capsys.readouterr().out
 

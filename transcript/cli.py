@@ -13,13 +13,23 @@ from pathlib import Path
 from rich.markup import escape
 from rich.table import Table
 
-from . import __version__, formats
+from . import __version__, formats, update
 from .converters import all_converters, all_edges, converter_edges
 from .engine import Context, Options, Workspace, execute, first_step_ok, remove_tree
 from .i18n import t
 from .planner import Route, plan
 from .tools import ConversionError
-from .ui import RichReporter, choose_target, console, err_console, format_label, human_size, is_interactive, menu_rows
+from .ui import (
+    RichReporter,
+    choose_action,
+    choose_target,
+    console,
+    err_console,
+    format_label,
+    human_size,
+    is_interactive,
+    menu_rows,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,11 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-l", "--list", action="store_true", help=t("help.list"))
     parser.add_argument("--formats", action="store_true", help=t("help.formats"))
     parser.add_argument("--doctor", action="store_true", help=t("help.doctor"))
+    parser.add_argument("--update", action="store_true", help=t("help.update"))
     parser.add_argument("--dpi", type=int, default=150, help=t("help.dpi"))
     parser.add_argument("--lang", metavar="CODE", help=t("help.lang"))
     parser.add_argument("--model", metavar="NAME", help=t("help.model"))
     parser.add_argument("-v", "--verbose", action="store_true", help=t("help.verbose"))
-    parser.add_argument("-V", "--version", action="version", version=f"transcript {__version__}")
+    parser.add_argument("-V", "--version", action="version", version=version_text())
     return parser
 
 
@@ -44,17 +55,44 @@ def main(argv: list[str] | None = None) -> int:
     _prepare_terminal()
     args = build_parser().parse_args(argv)
     try:
+        if args.update:
+            return update.run_update(args.verbose)
         if args.doctor:
             return doctor()
         if args.formats:
             return list_formats()
         if not args.files:
+            if is_interactive():
+                return main_menu(args.verbose)
             build_parser().print_help()
             return 0
         return run(args)
     except KeyboardInterrupt:
         err_console.print(t("cancelled"))
         return 130
+
+
+def version_text() -> str:
+    """'transcript 0.1.0', and the commit when it was installed from git: 'transcript 0.1.0 (228338b)'."""
+    commit = update.installed_commit()
+    return f"transcript {__version__}" + (f" ({commit[:7]})" if commit else "")
+
+
+def main_menu(verbose: bool = False) -> int:
+    """What ``transcript`` without a file shows in a terminal: update, formats, engines or help."""
+    console.print(f"[bold]{escape(version_text())}[/bold]  [dim]· {escape(t('main.hint'))}[/dim]", soft_wrap=True)
+    action = choose_action()
+    if action is None:
+        err_console.print(t("cancelled"))
+        return 130
+    if action == "update":
+        return update.run_update(verbose)
+    if action == "formats":
+        return list_formats()
+    if action == "doctor":
+        return doctor()
+    build_parser().print_help()
+    return 0
 
 
 def _prepare_terminal() -> None:
