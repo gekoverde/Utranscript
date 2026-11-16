@@ -40,8 +40,10 @@ Si ya existe un fichero con ese nombre no se sobrescribe: se guarda como `inform
 
 ## Instalación
 
-Necesitas **Python 3.10 o superior** ([python.org](https://www.python.org/downloads/); en
-Windows marca *"Add python.exe to PATH"* al instalarlo).
+Necesitas **Python 3.10 a 3.14** ([python.org](https://www.python.org/downloads/); en
+Windows marca *"Add python.exe to PATH"* al instalarlo). Con Python 3.15 algunas dependencias
+(PyYAML y las librerías de 7z) todavía no tienen paquetes precompilados para Windows; las
+órdenes de Windows de abajo ya instalan con Python 3.13 aunque tengas otra versión.
 
 La forma recomendada es [pipx](https://pipx.pypa.io), que instala el comando `transcript` de
 forma global y aislada:
@@ -49,10 +51,13 @@ forma global y aislada:
 **Windows (PowerShell)**
 
 ```powershell
-py -m pip install --user pipx
+py -m pip install --user --upgrade pipx
 py -m pipx ensurepath          # cierra y vuelve a abrir la terminal después
-pipx install git+https://github.com/gekoverde/Utranscript.git
+pipx install --python 3.13 --fetch-missing-python git+https://github.com/gekoverde/Utranscript.git
 ```
+
+`--python 3.13 --fetch-missing-python` instala con Python 3.13 y lo descarga si no lo tienes
+(hace falta pipx 1.5 o posterior: por eso el `--upgrade`).
 
 **Linux / macOS**
 
@@ -62,11 +67,19 @@ python3 -m pipx ensurepath
 pipx install git+https://github.com/gekoverde/Utranscript.git
 ```
 
+Si tu `python3` es la 3.15 o posterior, añade también `--python 3.13 --fetch-missing-python`.
+
 También puedes clonar el repositorio y ejecutar `install.ps1` (Windows) o `./install.sh`
-(Linux/macOS), que hacen lo mismo. Con [uv](https://docs.astral.sh/uv/) basta
-`uv tool install git+https://github.com/gekoverde/Utranscript.git`.
+(Linux/macOS), que eligen la versión de Python por ti. Con [uv](https://docs.astral.sh/uv/) basta
+`uv tool install --python 3.13 git+https://github.com/gekoverde/Utranscript.git` (uv también
+descarga Python 3.13 si hace falta).
 
 Para actualizar: `pipx upgrade transcript-cli`. Para desinstalar: `pipx uninstall transcript-cli`.
+
+> **Si falla con «Microsoft Visual C++ 14.0 or greater is required»**: estás instalando con una
+> versión de Python demasiado nueva (normalmente la 3.15). Alguna dependencia todavía no tiene
+> paquete precompilado para ella y pip intenta compilarla. Instala con la orden de pipx de arriba
+> (la que lleva `--python 3.13 --fetch-missing-python`) o con la de uv.
 
 > **Windows en ARM** (Surface Pro X, Snapdragon...): pandoc y Typst no publican paquetes para esa
 > arquitectura, así que no se instalan solos. Instala pandoc aparte (`winget install JohnMacFarlane.Pandoc`);
@@ -197,7 +210,7 @@ Variables de entorno opcionales:
 
 ```bash
 git clone https://github.com/gekoverde/Utranscript.git
-cd Transcript
+cd Utranscript
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest
