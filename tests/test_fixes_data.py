@@ -181,6 +181,15 @@ def test_non_text_keys_are_written_as_text(samples, convert, target):
     assert convert(src, target).stat().st_size > 0
 
 
+def test_ini_keys_may_contain_colons(samples, convert):
+    """A time or a URL as a key: Python 3.14 refuses to write it unless ":" is not a delimiter."""
+    src = samples / "keys.json"
+    src.write_text('{"times": {"2024-12-25T10:30:00": "Christmas", "https://x.org": "site"}}', encoding="utf-8")
+    text = convert(src, "ini").read_text(encoding="utf-8")
+    assert "2024-12-25T10:30:00 = Christmas" in text
+    assert "https://x.org = site" in text
+
+
 def test_non_text_keys_use_the_json_spelling(samples, convert):
     pytest.importorskip("yaml")
     src = samples / "keys.yaml"

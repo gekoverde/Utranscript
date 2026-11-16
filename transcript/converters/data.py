@@ -342,7 +342,9 @@ def _write_ini(data: Any, path: Path) -> None:
         data = {str(n): item for n, item in enumerate(data, 1)}  # records as sections [1], [2]...
     if not isinstance(data, dict):
         raise ConversionError("only key/value data (an object with sections) can be written as INI")
-    parser = configparser.ConfigParser(interpolation=None)
+    # Lines are written as "key = value". With "=" as the only delimiter a key may contain ":"
+    # (a time, a URL), which Python 3.14 otherwise refuses to write.
+    parser = configparser.ConfigParser(interpolation=None, delimiters=("=",))
     parser.optionxform = str
     loose = {}
     for key, value in data.items():
